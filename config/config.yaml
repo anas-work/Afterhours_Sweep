@@ -1,0 +1,50 @@
+# ==============================================================================
+# ABLBL AFTERHOURS SWEEP SURVEILLANCE SYSTEM - CONFIGURATION
+# ==============================================================================
+
+system:
+  app_name: "ABLBL Afterhours Sentinel"
+  version: "1.0.0"
+  timezone: "Asia/Kolkata"
+  log_level: "INFO"
+
+hardware:
+  inference_backend: "onnx"
+  device: "cuda"
+  device_id: 0                  # Specifically utilizes GPU 0 (NVIDIA RTX A4000)
+  precision: "fp32"             # fp32 or fp16
+  batch_size: 16                # Dynamic batch size for parallel inference across cameras
+  num_extraction_workers: 8     # Concurrent threads extracting 1 FPS frames from videos
+
+ml:
+  model_name: "yolo26n"
+  model_path: "models/yolo26n.onnx"
+  model_url: "https://huggingface.co/onnx-community/yolo26n-ONNX/resolve/main/onnx/model.onnx"
+  fp16_model_path: "models/yolo26n_fp16.onnx"
+  fp16_model_url: "https://huggingface.co/onnx-community/yolo26n-ONNX/resolve/main/onnx/model_fp16.onnx"
+  input_size: [640, 640]
+  confidence_threshold: 0.45    # Person detection confidence cutoff
+  person_class_id: 0            # COCO class 0: person
+  iou_threshold: 0.45
+
+surveillance:
+  default_scheduled_time: "22:00:00"  # HH:MM:SS 24-hr IST
+  sweep_duration_seconds: 180         # 3 minutes default recording window
+  target_processing_fps: 1.0          # 1 frame per second of recorded video
+  alarm_sound_enabled: true
+  auto_arm_schedule: true
+
+database:
+  url: "sqlite:///data/afterhours.db"
+  postgres_fallback_url: "postgresql://postgres:postgres_password@127.0.0.1:5433/afterhours_db"
+  echo: false
+
+server:
+  host: "0.0.0.0"
+  port: 9002                          # Dedicated port matching user deployment choice
+  cors_origins: ["*"]
+
+storage:
+  recordings_dir: "data/recordings"
+  captures_dir: "data/captures"
+  max_stored_sweeps: 50

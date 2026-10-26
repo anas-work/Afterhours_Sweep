@@ -1,0 +1,27 @@
+services:
+  afterhours_sentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: afterhours_sentinel_engine
+    restart: always
+    network_mode: "host"
+    environment:
+      - DATABASE_URL=sqlite:///data/afterhours.db
+      - NVIDIA_VISIBLE_DEVICES=all
+      - TZ=Asia/Kolkata
+    command: ["python3", "-m", "uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "9002"]
+    volumes:
+      - ./src:/app/src
+      - ./frontend:/app/frontend
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./config:/app/config
+      - ./test_videos:/app/test_videos
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
