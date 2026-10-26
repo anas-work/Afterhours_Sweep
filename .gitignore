@@ -17,6 +17,7 @@ data/recordings/*
 !data/recordings/.gitkeep
 data/captures/*
 !data/captures/.gitkeep
+data/test_recordings/
 data/*.db
 data/*.db-shm
 data/*.db-wal
