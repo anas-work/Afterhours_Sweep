@@ -1,15 +1,30 @@
 import os
+import time
 import psutil
-import torch
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
 import logging
 from typing import Dict, Any
 
 logger = logging.getLogger("ABLBL_Afterhours.Telemetry")
 
+_last_telemetry = None
+_last_telemetry_time = 0.0
+
 def get_system_telemetry(device_id: int = 0) -> Dict[str, Any]:
     """
     Returns real-time GPU 0 and system telemetry for live dashboard monitoring.
+    Cached for 3 seconds to eliminate CPU/subprocess thrashing from frequent HTTP polling.
     """
+    global _last_telemetry, _last_telemetry_time
+    now = time.time()
+    if _last_telemetry is not None and (now - _last_telemetry_time) < 3.0:
+        return dict(_last_telemetry)
+
     telemetry = {
         "gpu_available": False,
         "gpu_name": "N/A",
@@ -23,7 +38,7 @@ def get_system_telemetry(device_id: int = 0) -> Dict[str, Any]:
         "ram_utilization_pct": psutil.virtual_memory().percent
     }
 
-    if torch.cuda.is_available() and device_id < torch.cuda.device_count():
+    if TORCH_AVAILABLE and torch.cuda.is_available() and device_id < torch.cuda.device_count():
         telemetry["gpu_available"] = True
         telemetry["gpu_name"] = torch.cuda.get_device_name(device_id)
 
@@ -49,4 +64,6 @@ def get_system_telemetry(device_id: int = 0) -> Dict[str, Any]:
             telemetry["gpu_memory_total_mb"] = round(total_mem, 1)
             telemetry["gpu_memory_pct"] = round((mem_reserved / max(1.0, total_mem)) * 100, 1)
 
+    _last_telemetry = telemetry
+    _last_telemetry_time = now
     return telemetry

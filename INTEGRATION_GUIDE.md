@@ -406,3 +406,43 @@ export function playSynthesizedSiren() {
 - **Static Assets**: Images (`/captures/...`) and video clips (`/recordings/...`) are served directly by the FastAPI static mount. Use absolute paths or relative URLs as provided in the API response `capture_url`.
 - **5-Second Pause Guarantee**: Consecutive frame alerts per camera are throttled by at least 5.0 seconds. The frontend does not need to deduplicate frames from the same second.
 - **Port Reservation**: Default backend port is `9002` to avoid conflicts with ABLBL Attendance (`9001`) and PostgreSQL (`5433`).
+
+---
+
+## 6. aimdev Environment Deployment
+
+> **Environment:** `aimdev`  
+> **Server Host:** `106.51.83.253` (Public IP) / `192.168.0.32` (Internal LAN) / `127.0.0.1` (Localhost)  
+> **Assigned Sentinel Engine Port:** `9025` (HTTP)  
+
+### Network Endpoints & Ports
+
+| Service Component | Protocol | Host / URL | Port | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **REST API Base** | HTTP/1.1 | `http://106.51.83.253:9025/api` | `9025` | Management, surveillance triggers, telemetry & history |
+| **System Health Check** | HTTP/1.1 | `http://106.51.83.253:9025/api/health` | `9025` | GPU binding and engine health |
+| **Real-Time Event Stream** | WebSocket | `ws://106.51.83.253:9025/ws/events` | `9025` | Live intrusion alerts, sweeps, and state changes |
+| **Surveillance Status** | HTTP/1.1 | `http://106.51.83.253:9025/api/status` | `9025` | Telemetry, scheduler countdowns, and active sweep state |
+| **Captured Evidence Snapshots** | HTTP Static | `http://106.51.83.253:9025/captures/` | `9025` | Annotated intrusion snapshots (`.jpg`) with bounding boxes |
+| **Video Recordings** | HTTP Static | `http://106.51.83.253:9025/recordings/` | `9025` | Full multi-camera MP4 surveillance sweep recordings |
+
+### Quick Verification Commands
+```bash
+# Verify Health Endpoint
+curl -s http://106.51.83.253:9025/api/health
+
+# Verify Scheduler Status
+curl -s http://106.51.83.253:9025/api/status | head -n 20
+```
+
+### `/bv3` Migration & Deployment Notes
+- **Repository Location:** `/bv3/anas/ABLBL_Afterhours`
+- **Virtual Environment:** `/bv3/anas/ABLBL_Afterhours/.venv` (all shebangs and activate scripts updated for native `/bv3` execution).
+- **Database & Storage:** Local SQLite at `data/afterhours.db` and recordings at `data/recordings`.
+- **Native Startup Command:**
+  ```bash
+  cd /bv3/anas/ABLBL_Afterhours
+  .venv/bin/uvicorn src.api.app:app --host 0.0.0.0 --port 9025
+  ```
+- **Verified Status:** Operational (HTTP 200 on Web UI, `/api/status`, and Swagger documentation).
+

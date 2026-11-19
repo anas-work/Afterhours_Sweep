@@ -1,21 +1,6 @@
 import os
 import sys
 import glob
-import ctypes
-
-# Pre-load all NVIDIA CUDA/cuDNN/cuRAND/cuFFT shared objects into global process memory
-for p in sys.path:
-    nvidia_dir = os.path.join(p, "nvidia")
-    if os.path.exists(nvidia_dir):
-        for sub in os.listdir(nvidia_dir):
-            lib_dir = os.path.join(nvidia_dir, sub, "lib")
-            if os.path.exists(lib_dir):
-                for so_file in sorted(os.listdir(lib_dir)):
-                    if ".so" in so_file:
-                        try:
-                            ctypes.CDLL(os.path.join(lib_dir, so_file), mode=ctypes.RTLD_GLOBAL)
-                        except Exception:
-                            pass
 
 import cv2
 import numpy as np
@@ -56,12 +41,12 @@ class YOLO26Detector:
         opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         opts.intra_op_num_threads = 4
 
-        # Configure CUDA Provider targeting GPU 0
+        # Configure CUDA Provider targeting GPU 0 with conservative memory bounds
         cuda_provider_options = {
             "device_id": self.device_id,
             "arena_extend_strategy": "kSameAsRequested",
-            "gpu_mem_limit": 4 * 1024 * 1024 * 1024,  # 4GB limit on GPU 0
-            "cudnn_conv_algo_search": "EXHAUSTIVE",
+            "gpu_mem_limit": 1024 * 1024 * 1024,  # 1GB limit on GPU 0
+            "cudnn_conv_algo_search": "DEFAULT",
             "do_copy_in_default_stream": True
         }
 

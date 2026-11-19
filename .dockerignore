@@ -1,0 +1,11 @@
+.git
+frontend/node_modules
+models
+Testing_Videos2
+test_videos
+data
+__pycache__
+*.pyc
+.venv
+
+

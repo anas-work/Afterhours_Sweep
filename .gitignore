@@ -27,8 +27,9 @@ test_videos/*.mp4
 test_videos/*.mov
 Testing_Videos2/
 
-# Models (weights are downloaded or mounted)
+# Models (weights are downloaded or mounted; track yolo26n 9.8MB ONNX)
 models/*.onnx
+!models/yolo26n.onnx
 
 # Frontend
 frontend/node_modules/
