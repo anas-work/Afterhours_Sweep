@@ -7,10 +7,11 @@ services:
     restart: always
     network_mode: "host"
     environment:
+      - PORT=${PORT:-9025}
       - DATABASE_URL=sqlite:///data/afterhours.db
       - NVIDIA_VISIBLE_DEVICES=all
       - TZ=Asia/Kolkata
-    command: ["python3", "-m", "uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "9002"]
+    entrypoint: ["/app/entrypoint.sh"]
     volumes:
       - ./src:/app/src
       - ./frontend:/app/frontend

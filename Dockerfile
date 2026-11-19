@@ -30,8 +30,10 @@ RUN pip3 install --no-cache-dir -r requirements.txt && \
 
 # Copy application source code
 COPY . .
+RUN chmod +x /app/entrypoint.sh
 
-# Expose Sentinel Port 9002
-EXPOSE 9002
+# Expose Sentinel Port 9025
+EXPOSE 9025
 
-CMD ["python3", "-m", "uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "9002"]
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD []
