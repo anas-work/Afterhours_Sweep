@@ -1,6 +1,8 @@
 import os
 import time
 import cv2
+import shutil
+import subprocess
 import numpy as np
 import logging
 import threading
@@ -129,7 +131,9 @@ class RTSPRecorder:
             return self._generate_synthetic_video(cam_id, cam_name, output_path, max_duration_seconds)
 
         # Case 4: Real RTSP feed (e.g., rtsp://127.0.0.1:8554/... or external camera)
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|timeout;5000000"
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            "rtsp_transport;tcp|timeout;2000000|stimeout;2000000|max_delay;0|fflags;nobuffer|flags;low_delay"
+        )
         cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             cap = cv2.VideoCapture(rtsp_url)
@@ -181,7 +185,7 @@ class RTSPRecorder:
                 return self._slice_local_video(mapped_src, output_path, max_duration_seconds)
 
         logger.info(f"Saved {frames_written} frames from RTSP {cam_id} to {output_path}")
-        return output_path
+        return self._ensure_web_compatible_h264(output_path)
 
     def _slice_local_video(self, source_path: str, output_path: str, max_duration_seconds: int) -> str:
         """
@@ -220,7 +224,7 @@ class RTSPRecorder:
             writer.release()
 
         logger.info(f"Ingested {frames_written} frames for test video {source_path} to {output_path}")
-        return output_path
+        return self._ensure_web_compatible_h264(output_path)
 
     def _generate_synthetic_video(self, cam_id: str, cam_name: str, output_path: str, max_duration_seconds: int) -> str:
         fps = 10.0
@@ -261,4 +265,41 @@ class RTSPRecorder:
         finally:
             writer.release()
 
-        return output_path
+        return self._ensure_web_compatible_h264(output_path)
+
+    def _ensure_web_compatible_h264(self, video_path: str) -> str:
+        """
+        Ensures the recorded video is encoded in H.264 (AVC1, YUV420P) with +faststart moov atom
+        for instant, native HTML5 streaming playback in modern web browsers.
+        """
+        if not video_path or not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+            return video_path
+
+        ffmpeg_bin = shutil.which("ffmpeg") or "/home/green/.local/bin/ffmpeg"
+        if not shutil.which(ffmpeg_bin) and not os.path.exists(ffmpeg_bin):
+            return video_path
+
+        tmp_path = f"{video_path}.h264.mp4"
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-i", video_path,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            tmp_path
+        ]
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
+            if res.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                os.replace(tmp_path, video_path)
+                logger.debug(f"Remuxed {video_path} to browser-compatible H.264 (+faststart).")
+        except Exception as e:
+            logger.debug(f"H.264 browser remux notice for {video_path}: {e}")
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+        return video_path
