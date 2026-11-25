@@ -47,4 +47,4 @@ server:
 storage:
   recordings_dir: "data/recordings"
   captures_dir: "data/captures"
-  max_stored_sweeps: 50
+  max_stored_sweeps: 5

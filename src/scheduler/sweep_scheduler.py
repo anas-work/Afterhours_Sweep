@@ -27,7 +27,7 @@ class SweepScheduler:
         db_repo: AfterhoursRepository,
         default_scheduled_time: str = "22:00:00",
         default_sweep_duration: int = 180,
-        max_stored_sweeps: int = 50,
+        max_stored_sweeps: int = 5,
         recordings_dir: str = "data/recordings",
         captures_dir: str = "data/captures",
         event_broadcaster: Optional[Callable[[str, Dict[str, Any]], None]] = None

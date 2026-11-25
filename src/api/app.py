@@ -85,7 +85,7 @@ def create_app(config_path: str = "config/config.yaml") -> FastAPI:
     surv_cfg = config.get("surveillance", {})
     sched_time = surv_cfg.get("default_scheduled_time", "22:00:00")
     sweep_dur = surv_cfg.get("sweep_duration_seconds", 180)
-    max_stored = storage_cfg.get("max_stored_sweeps", 50)
+    max_stored = storage_cfg.get("max_stored_sweeps", 5)
 
     scheduler = SweepScheduler(
         recorder=recorder,
