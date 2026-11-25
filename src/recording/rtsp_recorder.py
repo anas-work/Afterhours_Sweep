@@ -2,14 +2,29 @@ import os
 import time
 import cv2
 import shutil
+import socket
 import subprocess
 import numpy as np
 import logging
 import threading
+from urllib.parse import urlparse
 from typing import Dict, Any, List, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger("ABLBL_Afterhours.RTSPRecorder")
+
+def _probe_rtsp_stream(url: str, timeout: float = 1.0) -> bool:
+    """Fast non-blocking TCP socket pre-check to avoid multi-second OpenCV hangs on dead cameras."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if not host:
+            return False
+        port = parsed.port or 554
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
 
 DOCK_VIDEO_MAP = {
     "cctv_dock_01": "test_videos/test_cctv_gate.mp4",
@@ -131,6 +146,23 @@ class RTSPRecorder:
             return self._generate_synthetic_video(cam_id, cam_name, output_path, max_duration_seconds)
 
         # Case 4: Real RTSP feed (e.g., rtsp://127.0.0.1:8554/... or external camera)
+        is_net = rtsp_url.startswith("rtsp://") or rtsp_url.startswith("http://") or rtsp_url.startswith("https://")
+        if is_net and not _probe_rtsp_stream(rtsp_url, timeout=1.0):
+            logger.info(f"RTSP stream pre-check unreachable for {cam_id} ({rtsp_url}). Activating fallback...")
+            mapped_src = DOCK_VIDEO_MAP.get(cam_id)
+            if mapped_src and os.path.exists(mapped_src):
+                logger.info(f"Using mapped dock video for {cam_id}: {mapped_src}")
+                return self._slice_local_video(mapped_src, output_path, max_duration_seconds)
+
+            test_vids = [os.path.join("test_videos", f) for f in os.listdir("test_videos") if f.endswith(".mp4")] if os.path.exists("test_videos") else []
+            if test_vids:
+                chosen = test_vids[hash(cam_id) % len(test_vids)]
+                logger.info(f"RTSP stream {rtsp_url} offline for {cam_id}. Using test video source: {chosen}")
+                return self._slice_local_video(chosen, output_path, max_duration_seconds)
+            else:
+                logger.warning(f"RTSP stream offline for {cam_id} ({rtsp_url}). Generating synthetic surveillance video.")
+                return self._generate_synthetic_video(cam_id, cam_name, output_path, max_duration_seconds)
+
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
             "rtsp_transport;tcp|timeout;2000000|stimeout;2000000|max_delay;0|fflags;nobuffer|flags;low_delay"
         )
@@ -165,13 +197,25 @@ class RTSPRecorder:
 
         start_time = time.time()
         frames_written = 0
+        consecutive_fails = 0
 
         try:
             while not self._stop_event.is_set() and (time.time() - start_time) < max_duration_seconds:
                 ret, frame = cap.read()
-                if not ret:
-                    time.sleep(0.04)
+                if not ret or frame is None:
+                    consecutive_fails += 1
+                    if consecutive_fails > 30 and is_net:
+                        # Attempt quick mid-recording reconnect to recover from temporary network drops
+                        logger.debug(f"Feed dropped on {cam_id}, attempting reconnect...")
+                        cap.release()
+                        time.sleep(0.5)
+                        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+                        consecutive_fails = 0
+                    else:
+                        time.sleep(0.03)
                     continue
+
+                consecutive_fails = 0
                 writer.write(frame)
                 frames_written += 1
         finally:
