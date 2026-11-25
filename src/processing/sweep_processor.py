@@ -105,10 +105,27 @@ class SweepProcessor:
                     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
                     step_frame_delta = int(round(fps))
 
-                    for sec, frame_idx in steps:
-                        # Direct seek for high performance
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    current_pos = -1
+                    for i, (sec, frame_idx) in enumerate(steps):
+                        # If first frame, negative offset, or gap > 90 frames, seek directly
+                        if current_pos < 0 or frame_idx < current_pos or (frame_idx - current_pos) > 90:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                            current_pos = frame_idx
+                        else:
+                            # Fast packet advance without full RGB pixel decompression (3-5x faster)
+                            while current_pos < frame_idx:
+                                if not cap.grab():
+                                    break
+                                current_pos += 1
+
                         ret, frame = cap.read()
+                        if not ret or frame is None:
+                            # Resynchronization fallback: direct seek
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                            ret, frame = cap.read()
+
+                        current_pos = frame_idx + 1
+
                         if ret and frame is not None:
                             # Push to queue (blocks if queue is full to bound memory)
                             frame_queue.put({
