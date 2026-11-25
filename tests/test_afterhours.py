@@ -141,3 +141,55 @@ def test_sweep_processor_pipeline(db_repo):
 
     assert summary["processed_frames"] >= 2
     assert summary["processing_fps"] > 0
+
+def test_storage_pruning(db_repo, tmp_path):
+    # Flush existing history in shared fixture
+    db_repo.flush_all_history()
+
+    # Setup test directories
+    test_rec_dir = str(tmp_path / "recordings")
+    test_cap_dir = str(tmp_path / "captures")
+    os.makedirs(test_rec_dir, exist_ok=True)
+    os.makedirs(test_cap_dir, exist_ok=True)
+
+    # Insert 5 dummy sweeps
+    for i in range(1, 6):
+        sid = f"sweep_{i:02d}"
+        db_repo.create_sweep(sid, total_cameras=1)
+        os.makedirs(os.path.join(test_rec_dir, sid), exist_ok=True)
+        os.makedirs(os.path.join(test_cap_dir, sid), exist_ok=True)
+        # Create a dummy file in each
+        with open(os.path.join(test_rec_dir, sid, "test.mp4"), "w") as f:
+            f.write("dummy")
+        with open(os.path.join(test_cap_dir, sid, "test.jpg"), "w") as f:
+            f.write("dummy")
+
+    assert db_repo.get_sweep_count() == 5
+
+    # Instantiate scheduler with max_stored_sweeps = 3
+    scheduler = SweepScheduler(
+        recorder=None,
+        processor=None,
+        db_repo=db_repo,
+        max_stored_sweeps=3,
+        recordings_dir=test_rec_dir,
+        captures_dir=test_cap_dir
+    )
+
+    # Trigger pruning
+    scheduler._prune_old_sweeps()
+
+    # Verify db count is now 3
+    assert db_repo.get_sweep_count() == 3
+
+    # Verify oldest 2 sweeps (sweep_01, sweep_02) were removed
+    remaining_sweeps = [s.id for s in db_repo.get_sweeps(limit=10)]
+    assert "sweep_01" not in remaining_sweeps
+    assert "sweep_02" not in remaining_sweeps
+    assert "sweep_05" in remaining_sweeps
+
+    # Verify folders were pruned
+    assert not os.path.exists(os.path.join(test_rec_dir, "sweep_01"))
+    assert not os.path.exists(os.path.join(test_cap_dir, "sweep_01"))
+    assert os.path.exists(os.path.join(test_rec_dir, "sweep_05"))
+

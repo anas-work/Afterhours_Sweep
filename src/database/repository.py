@@ -126,6 +126,21 @@ class AfterhoursRepository:
         with self.get_session() as session:
             return session.query(SweepModel).order_by(desc(SweepModel.start_time)).limit(limit).all()
 
+    def get_sweep_count(self) -> int:
+        with self.get_session() as session:
+            return session.query(SweepModel).count()
+
+    def get_oldest_sweeps(self, limit: int = 10) -> List[SweepModel]:
+        with self.get_session() as session:
+            return session.query(SweepModel).order_by(SweepModel.start_time.asc()).limit(limit).all()
+
+    def delete_sweep(self, sweep_id: str) -> bool:
+        with self.get_session() as session:
+            session.query(DetectionModel).filter(DetectionModel.sweep_id == sweep_id).delete()
+            deleted = session.query(SweepModel).filter(SweepModel.id == sweep_id).delete()
+            session.commit()
+            return deleted > 0
+
     def get_sweep_by_id(self, sweep_id: str) -> Optional[SweepModel]:
         with self.get_session() as session:
             return session.query(SweepModel).filter(SweepModel.id == sweep_id).first()

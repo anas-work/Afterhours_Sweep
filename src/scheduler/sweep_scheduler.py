@@ -27,6 +27,9 @@ class SweepScheduler:
         db_repo: AfterhoursRepository,
         default_scheduled_time: str = "22:00:00",
         default_sweep_duration: int = 180,
+        max_stored_sweeps: int = 50,
+        recordings_dir: str = "data/recordings",
+        captures_dir: str = "data/captures",
         event_broadcaster: Optional[Callable[[str, Dict[str, Any]], None]] = None
     ):
         self.recorder = recorder
@@ -34,6 +37,9 @@ class SweepScheduler:
         self.db_repo = db_repo
         self.scheduled_time_str = default_scheduled_time
         self.sweep_duration = default_sweep_duration
+        self.max_stored_sweeps = max(1, int(max_stored_sweeps))
+        self.recordings_dir = recordings_dir
+        self.captures_dir = captures_dir
         self.event_broadcaster = event_broadcaster
 
         self.mode = "AUTO"  # "AUTO" or "MANUAL"
@@ -374,6 +380,39 @@ class SweepScheduler:
         logger.info(f"=== SURVEILLANCE SWEEP FINISHED [{sweep_id}] ===")
         self._broadcast("SWEEP_COMPLETED", summary)
         self._emit_status_event()
+
+        # Phase 4: FIFO Automated Storage Pruning
+        self._prune_old_sweeps()
+
+    def _prune_old_sweeps(self) -> None:
+        """Prunes oldest sweep recordings, captures, and database records when exceeding max_stored_sweeps."""
+        try:
+            total_sweeps = self.db_repo.get_sweep_count()
+            if total_sweeps > self.max_stored_sweeps:
+                excess_count = total_sweeps - self.max_stored_sweeps
+                logger.info(f"Storage pruning triggered: {total_sweeps} sweeps stored, limit is {self.max_stored_sweeps}. Pruning oldest {excess_count} sweeps.")
+                oldest_sweeps = self.db_repo.get_oldest_sweeps(limit=excess_count)
+                for old_sweep in oldest_sweeps:
+                    sid = old_sweep.id
+                    # Clean up recordings directory
+                    rec_sweep_dir = os.path.join(self.recordings_dir, sid)
+                    if os.path.exists(rec_sweep_dir):
+                        try:
+                            shutil.rmtree(rec_sweep_dir, ignore_errors=True)
+                        except Exception as del_err:
+                            logger.warning(f"Failed removing recordings dir {rec_sweep_dir}: {del_err}")
+                    # Clean up captures directory
+                    cap_sweep_dir = os.path.join(self.captures_dir, sid)
+                    if os.path.exists(cap_sweep_dir):
+                        try:
+                            shutil.rmtree(cap_sweep_dir, ignore_errors=True)
+                        except Exception as del_err:
+                            logger.warning(f"Failed removing captures dir {cap_sweep_dir}: {del_err}")
+                    # Delete from database
+                    self.db_repo.delete_sweep(sid)
+                    logger.info(f"Pruned old sweep {sid} successfully.")
+        except Exception as prune_err:
+            logger.error(f"Error during FIFO sweep pruning: {prune_err}")
 
     def _broadcast(self, event_type: str, data: Dict[str, Any]):
         if self.event_broadcaster:
