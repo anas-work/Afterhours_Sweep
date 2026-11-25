@@ -12,14 +12,14 @@ All commands assume you are in the project root:
 
 | Service                      | Host Port | Protocol        | Process / Command                       | Description                                    |
 | :--------------------------- | :-------- | :-------------- | :-------------------------------------- | :--------------------------------------------- |
-| **FastAPI Sentinel Engine**   | **9002**  | HTTP, WebSocket | `python3 -m uvicorn src.api.app:app`    | ML Inference, REST API, WebSocket, Dashboard   |
+| **FastAPI Sentinel Engine**   | **9025**  | HTTP, WebSocket | `python3 -m uvicorn src.api.app:app`    | ML Inference, REST API, WebSocket, Dashboard   |
 | **MediaMTX RTSP Server**     | **8554**  | RTSP / TCP      | Docker `mtx_rtsp_test`                  | Ingests & distributes multi-camera RTSP feeds  |
 | **RTSP 11-Dock Streamer**    | N/A       | RTSP Loop       | `python3 scripts/publish_demo_rtsp_streams.py` | Loops 11 warehouse dock test videos to 8554 |
 | **SQLite Database**          | Local File| File (WAL mode) | `data/afterhours.db`                    | Zero-overhead multi-process surveillance storage|
 | **PostgreSQL (Optional)**    | 5433      | TCP             | Configurable via `DATABASE_URL`         | Production enterprise SQL storage              |
 
-*Note: Port 9002 is specifically chosen to guarantee zero conflict with
-existing running services (such as ABLBL_AttendanceV1 on 9001 and Postgres on 5433).*
+*Note: Port 9025 is specifically chosen to guarantee zero conflict with
+existing running services (such as ABLBL_AttendanceV1 on 9001 and Postgres on 5433, and product verification frontend on 9002).*
 
 ===============================================================================
   2. HARDWARE & GPU 0 SPECIFICATIONS
@@ -44,12 +44,12 @@ docker start mtx_rtsp_test
 nohup python3 scripts/publish_demo_rtsp_streams.py > /dev/null 2>&1 &
 
 ### Step 3: Launch the Sentinel Backend Engine
-python3 -m uvicorn src.api.app:app --host 0.0.0.0 --port 9002
+python3 -m uvicorn src.api.app:app --host 0.0.0.0 --port 9025
 
 ### Step 4: Access the Web Dashboard
 Open in your browser:
-  http://49.206.228.75:9002
-  http://localhost:9002
+  http://192.168.0.174:9025
+  http://localhost:9025
 
 Features on the Dashboard:
   - Live IST Clock & Countdown to Next Scheduled Surveillance Sweep
@@ -72,48 +72,48 @@ python3 -m pytest tests/test_api.py tests/test_afterhours.py -v
 ===============================================================================
 
 # System Health Check:
-curl http://localhost:9002/api/health
+curl http://localhost:9025/api/health
 
 # Current Status & Schedule Countdown:
-curl http://localhost:9002/api/status
+curl http://localhost:9025/api/status
 
 # Manually Trigger Surveillance Sweep (Auto Mode / 3-minute cycle):
-curl -X POST http://localhost:9002/api/sweep/trigger
+curl -X POST http://localhost:9025/api/sweep/trigger
 
 # Switch Mode (AUTO vs MANUAL):
-curl -X POST http://localhost:9002/api/mode -H "Content-Type: application/json" -d '{"mode": "MANUAL"}'
+curl -X POST http://localhost:9025/api/mode -H "Content-Type: application/json" -d '{"mode": "MANUAL"}'
 
 # Start Continuous Manual Surveillance (Manual Mode):
-curl -X POST http://localhost:9002/api/sweep/start_manual
+curl -X POST http://localhost:9025/api/sweep/start_manual
 
 # Stop Continuous Manual Surveillance & Begin GPU Analysis (Manual Mode):
-curl -X POST http://localhost:9002/api/sweep/stop_manual
+curl -X POST http://localhost:9025/api/sweep/stop_manual
 
 # Silence Active Intrusion Alarm:
-curl -X POST http://localhost:9002/api/sweep/silence_alarm
+curl -X POST http://localhost:9025/api/sweep/silence_alarm
 
 # Flush All History, Recorded Clips, and Detections:
-curl -X POST http://localhost:9002/api/flush
+curl -X POST http://localhost:9025/api/flush
 
 # List Past Surveillance Sweeps:
-curl http://localhost:9002/api/sweeps
+curl http://localhost:9025/api/sweeps
 
 # List All Detected Person Captures:
-curl http://localhost:9002/api/detections
+curl http://localhost:9025/api/detections
 
 # List Consolidated Detections Organized By Dock:
-curl http://localhost:9002/api/detections/by_dock
+curl http://localhost:9025/api/detections/by_dock
 
 # Seed All 11 Warehouse Dock Camera Feeds:
-curl -X POST http://localhost:9002/api/cameras/seed_cctv
+curl -X POST http://localhost:9025/api/cameras/seed_cctv
 
 # Add / Configure an RTSP Camera:
-curl -X POST http://localhost:9002/api/cameras \
+curl -X POST http://localhost:9025/api/cameras \
   -H "Content-Type: application/json" \
   -d '{"id": "cctv_dock_12", "name": "Warehouse Dock Gate 12", "rtsp_url": "rtsp://127.0.0.1:8554/dock12", "location": "Dock 12"}'
 
 # Update Surveillance Schedule & Window:
-curl -X POST http://localhost:9002/api/settings \
+curl -X POST http://localhost:9025/api/settings \
   -H "Content-Type: application/json" \
   -d '{"scheduled_time": "23:00:00", "sweep_duration_seconds": 180}'
 
