@@ -32,6 +32,11 @@ class YOLO26Detector:
         self.input_width, self.input_height = input_size
         self.person_class_id = 0
 
+        if not os.path.isabs(self.model_path) and not os.path.exists(self.model_path):
+            repo_model = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), self.model_path)
+            if os.path.exists(repo_model):
+                self.model_path = repo_model
+
         if auto_download and not os.path.exists(self.model_path):
             ensure_model_exists(self.model_path)
 

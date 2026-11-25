@@ -105,17 +105,17 @@ def create_app(config_path: str = "config/config.yaml") -> FastAPI:
         scheduler.start()
         # Seed default warehouse dock cameras if empty
         if not db_repo.get_cameras():
-            db_repo.add_or_update_camera("cctv_dock_01", "Warehouse Dock Gate 1", "rtsp://127.0.0.1:8554/dock1", "Dock 1")
-            db_repo.add_or_update_camera("cctv_dock_02", "Warehouse Dock Gate 2", "rtsp://127.0.0.1:8554/dock2", "Dock 2")
-            db_repo.add_or_update_camera("cctv_dock_03", "Warehouse Dock Gate 3", "rtsp://127.0.0.1:8554/dock3", "Dock 3")
-            db_repo.add_or_update_camera("cctv_dock_04", "Warehouse Dock Gate 4", "rtsp://127.0.0.1:8554/dock4", "Dock 4")
-            db_repo.add_or_update_camera("cctv_dock_05", "Warehouse Dock Gate 5", "rtsp://127.0.0.1:8554/dock5", "Dock 5")
-            db_repo.add_or_update_camera("cctv_dock_06", "Warehouse Dock Gate 6", "rtsp://127.0.0.1:8554/dock6", "Dock 6")
-            db_repo.add_or_update_camera("cctv_dock_07", "Warehouse Dock Gate 7", "rtsp://127.0.0.1:8554/dock7", "Dock 7")
-            db_repo.add_or_update_camera("cctv_dock_08", "Warehouse Dock Gate 8", "rtsp://127.0.0.1:8554/dock8", "Dock 8")
-            db_repo.add_or_update_camera("cctv_dock_09", "Warehouse Dock Gate 9", "rtsp://127.0.0.1:8554/dock9", "Dock 9")
-            db_repo.add_or_update_camera("cctv_dock_10", "Warehouse Dock Gate 10", "rtsp://127.0.0.1:8554/dock10", "Dock 10")
-            db_repo.add_or_update_camera("cctv_dock_11", "Warehouse Dock Gate 11", "rtsp://127.0.0.1:8554/dock11", "Dock 11")
+            db_repo.add_or_update_camera("cctv_dock_01", "Warehouse Dock Gate 1", "rtsp://127.0.0.1:8554/afterhours/dock1", "Dock 1")
+            db_repo.add_or_update_camera("cctv_dock_02", "Warehouse Dock Gate 2", "rtsp://127.0.0.1:8554/afterhours/dock2", "Dock 2")
+            db_repo.add_or_update_camera("cctv_dock_03", "Warehouse Dock Gate 3", "rtsp://127.0.0.1:8554/afterhours/dock3", "Dock 3")
+            db_repo.add_or_update_camera("cctv_dock_04", "Warehouse Dock Gate 4", "rtsp://127.0.0.1:8554/afterhours/dock4", "Dock 4")
+            db_repo.add_or_update_camera("cctv_dock_05", "Warehouse Dock Gate 5", "rtsp://127.0.0.1:8554/afterhours/dock5", "Dock 5")
+            db_repo.add_or_update_camera("cctv_dock_06", "Warehouse Dock Gate 6", "rtsp://127.0.0.1:8554/afterhours/dock6", "Dock 6")
+            db_repo.add_or_update_camera("cctv_dock_07", "Warehouse Dock Gate 7", "rtsp://127.0.0.1:8554/afterhours/dock7", "Dock 7")
+            db_repo.add_or_update_camera("cctv_dock_08", "Warehouse Dock Gate 8", "rtsp://127.0.0.1:8554/afterhours/dock8", "Dock 8")
+            db_repo.add_or_update_camera("cctv_dock_09", "Warehouse Dock Gate 9", "rtsp://127.0.0.1:8554/afterhours/dock9", "Dock 9")
+            db_repo.add_or_update_camera("cctv_dock_10", "Warehouse Dock Gate 10", "rtsp://127.0.0.1:8554/afterhours/dock10", "Dock 10")
+            db_repo.add_or_update_camera("cctv_dock_11", "Warehouse Dock Gate 11", "rtsp://127.0.0.1:8554/afterhours/dock11", "Dock 11")
         yield
         scheduler.stop()
 
