@@ -1,24 +1,40 @@
 import os
 import sys
 import glob
+import ctypes
+
+# Pre-load CUDA / cuDNN shared libraries into process memory so ONNX Runtime finds them
+for _so in sorted(glob.glob("/home/green/.pyenv/versions/3.11.15/lib/python3.11/site-packages/nvidia/*/lib/*.so*")):
+    try:
+        ctypes.CDLL(_so, mode=ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
 
 import cv2
 import numpy as np
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 import onnxruntime as ort
+import torch
+try:
+    import tensorrt as trt
+    HAS_TENSORRT = True
+except ImportError:
+    HAS_TENSORRT = False
+
 from src.ml.model_downloader import ensure_model_exists
 
 logger = logging.getLogger("ABLBL_Afterhours.YOLO26Detector")
 
 class YOLO26Detector:
     """
-    High-performance batched YOLO26n detector deployed on ONNX Runtime.
-    Explicitly uses GPU 0 with CUDAExecutionProvider for ultra-low latency & high throughput.
+    High-performance batched YOLO26n detector supporting both:
+    1. NVIDIA TensorRT FP16 Engine (Primary ultra-low latency & high throughput engine on GPU 0)
+    2. ONNX Runtime CUDAExecutionProvider (Automatic fallback)
     """
     def __init__(
         self,
-        model_path: str = "models/yolo26n.onnx",
+        model_path: str = "models/yolo26n_fp16.engine",
         device_id: int = 0,
         conf_threshold: float = 0.45,
         iou_threshold: float = 0.45,
@@ -32,60 +48,90 @@ class YOLO26Detector:
         self.input_width, self.input_height = input_size
         self.person_class_id = 0
 
+        self.use_tensorrt = False
+        self.trt_engine = None
+        self.trt_context = None
+        self.trt_stream = None
+
         if not os.path.isabs(self.model_path) and not os.path.exists(self.model_path):
             repo_model = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), self.model_path)
             if os.path.exists(repo_model):
                 self.model_path = repo_model
 
-        if auto_download and not os.path.exists(self.model_path):
+        # Fallback to .onnx if .engine doesn't exist
+        if not os.path.exists(self.model_path) and self.model_path.endswith(".engine"):
+            alt_onnx = self.model_path.replace("_fp16.engine", ".onnx").replace(".engine", ".onnx")
+            if os.path.exists(alt_onnx):
+                logger.info(f"TensorRT engine not found at {self.model_path}, using ONNX model at {alt_onnx}")
+                self.model_path = alt_onnx
+
+        if auto_download and not os.path.exists(self.model_path) and self.model_path.endswith(".onnx"):
             ensure_model_exists(self.model_path)
 
-        # Configure ONNX Runtime Session Options
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        opts.intra_op_num_threads = 4
+        # 1. Try TensorRT FP16 Initialization
+        if HAS_TENSORRT and self.model_path.endswith(".engine") and os.path.exists(self.model_path):
+            try:
+                logger.info(f"Initializing NVIDIA TensorRT FP16 Engine from {self.model_path} on GPU {self.device_id}...")
+                trt_logger = trt.Logger(trt.Logger.WARNING)
+                with open(self.model_path, "rb") as f:
+                    trt_runtime = trt.Runtime(trt_logger)
+                    self.trt_engine = trt_runtime.deserialize_cuda_engine(f.read())
+                self.trt_context = self.trt_engine.create_execution_context()
+                self.trt_stream = torch.cuda.Stream(device=self.device_id)
+                self.input_name = "pixel_values"
+                self.logits_name = "logits"
+                self.boxes_name = "pred_boxes"
+                self.use_tensorrt = True
+                logger.info(f"TensorRT FP16 Engine initialized successfully on GPU {self.device_id}! (Target: 1500+ FPS)")
+            except Exception as trt_err:
+                logger.warning(f"Failed to load TensorRT engine: {trt_err}. Falling back to ONNX Runtime CUDA.")
+                self.use_tensorrt = False
 
-        # Configure CUDA Provider targeting GPU 0 with conservative memory bounds
-        cuda_provider_options = {
-            "device_id": self.device_id,
-            "arena_extend_strategy": "kSameAsRequested",
-            "gpu_mem_limit": 1024 * 1024 * 1024,  # 1GB limit on GPU 0
-            "cudnn_conv_algo_search": "DEFAULT",
-            "do_copy_in_default_stream": True
-        }
+        # 2. ONNX Runtime Fallback if TensorRT not used
+        if not self.use_tensorrt:
+            if self.model_path.endswith(".engine"):
+                alt_onnx = self.model_path.replace("_fp16.engine", ".onnx").replace(".engine", ".onnx")
+                if os.path.exists(alt_onnx):
+                    logger.info(f"Using ONNX fallback model at {alt_onnx}")
+                    self.model_path = alt_onnx
 
-        providers = [
-            ("CUDAExecutionProvider", cuda_provider_options),
-            "CPUExecutionProvider"
-        ]
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            opts.intra_op_num_threads = 4
 
-        logger.info(f"Initializing ONNX session with providers: {providers} on GPU {self.device_id}...")
-        self.session = ort.InferenceSession(self.model_path, sess_options=opts, providers=providers)
-        
-        active_providers = self.session.get_providers()
-        logger.info(f"Active ONNX Runtime providers: {active_providers}")
-        if "CUDAExecutionProvider" in active_providers:
-            logger.info(f"YOLO26n successfully running on NVIDIA GPU {self.device_id}!")
-        else:
-            logger.warning(f"CUDA provider not available; falling back to CPU.")
+            cuda_provider_options = {
+                "device_id": self.device_id,
+                "arena_extend_strategy": "kSameAsRequested",
+                "gpu_mem_limit": 1024 * 1024 * 1024,
+                "cudnn_conv_algo_search": "DEFAULT",
+                "do_copy_in_default_stream": True
+            }
 
-        # Cache input and output metadata
-        self.input_name = self.session.get_inputs()[0].name
-        self.input_shape = self.session.get_inputs()[0].shape
-        self.output_names = [o.name for o in self.session.get_outputs()]
-        logger.info(f"Model Input: {self.input_name} {self.input_shape}, Outputs: {self.output_names}")
+            providers = [
+                ("CUDAExecutionProvider", cuda_provider_options),
+                "CPUExecutionProvider"
+            ]
 
-        # Warmup GPU 0
+            logger.info(f"Initializing ONNX session with providers: {providers} on GPU {self.device_id}...")
+            self.session = ort.InferenceSession(self.model_path, sess_options=opts, providers=providers)
+            active_providers = self.session.get_providers()
+            logger.info(f"Active ONNX Runtime providers: {active_providers}")
+
+            self.input_name = self.session.get_inputs()[0].name
+            self.input_shape = self.session.get_inputs()[0].shape
+            self.output_names = [o.name for o in self.session.get_outputs()]
+
+        # Warmup GPU
         self._warmup()
 
     def _warmup(self, warmup_runs: int = 3):
-        """Warms up CUDA engine to eliminate cold-start latency."""
+        """Warms up GPU engine to eliminate cold-start latency."""
         try:
-            logger.info("Warming up YOLO26n on GPU 0...")
-            dummy_batch = np.zeros((1, 3, self.input_height, self.input_width), dtype=np.float32)
+            logger.info(f"Warming up YOLO26n on GPU {self.device_id} ({'TensorRT FP16' if self.use_tensorrt else 'ONNX CUDA'})...")
+            dummy_batch = [np.zeros((self.input_height, self.input_width, 3), dtype=np.uint8)]
             for _ in range(warmup_runs):
-                self.session.run(self.output_names, {self.input_name: dummy_batch})
+                self.detect_batch(dummy_batch)
             logger.info("Warmup complete. Ready for real-time surveillance sweeps.")
         except Exception as e:
             logger.warning(f"Warmup warning: {e}")
@@ -128,6 +174,31 @@ class YOLO26Detector:
 
         return chw, r, pad_x, pad_y, orig_w, orig_h
 
+    def _execute_inference(self, input_tensor: np.ndarray) -> List[np.ndarray]:
+        """
+        Executes inference on GPU using either TensorRT FP16 (preferred) or ONNX Runtime.
+        """
+        if self.use_tensorrt:
+            bs = input_tensor.shape[0]
+            torch_input = torch.from_numpy(np.ascontiguousarray(input_tensor)).to(device=f"cuda:{self.device_id}", dtype=torch.float32)
+            self.trt_context.set_input_shape(self.input_name, (bs, 3, self.input_height, self.input_width))
+            
+            logits_tensor = torch.empty((bs, 300, 80), device=f"cuda:{self.device_id}", dtype=torch.float32)
+            boxes_tensor = torch.empty((bs, 300, 4), device=f"cuda:{self.device_id}", dtype=torch.float32)
+
+            self.trt_context.set_tensor_address(self.input_name, torch_input.data_ptr())
+            self.trt_context.set_tensor_address(self.logits_name, logits_tensor.data_ptr())
+            self.trt_context.set_tensor_address(self.boxes_name, boxes_tensor.data_ptr())
+
+            self.trt_context.execute_async_v3(self.trt_stream.cuda_stream)
+            self.trt_stream.synchronize()
+
+            logits = logits_tensor.cpu().numpy()
+            pred_boxes = boxes_tensor.cpu().numpy()
+            return [logits, pred_boxes]
+        else:
+            return self.session.run(self.output_names, {self.input_name: input_tensor})
+
     def detect_batch(self, frames: List[np.ndarray]) -> List[List[Dict[str, Any]]]:
         """
         Runs batch inference across multiple frames on GPU 0.
@@ -149,13 +220,35 @@ class YOLO26Detector:
             meta_list.append((r, pad_x, pad_y, orig_w, orig_h))
 
         input_tensor = np.ascontiguousarray(np.stack(batch_chw, axis=0), dtype=np.float32)
-
-        # Execute ONNX inference on GPU 0
-        raw_outputs = self.session.run(self.output_names, {self.input_name: input_tensor})
+        raw_outputs = self._execute_inference(input_tensor)
 
         all_results = []
         batch_size = len(frames)
 
+        for b in range(batch_size):
+            r, pad_x, pad_y, orig_w, orig_h = meta_list[b]
+            frame_detections = self._parse_detections(raw_outputs, b, r, pad_x, pad_y, orig_w, orig_h)
+            all_results.append(frame_detections)
+
+        return all_results
+
+    def detect_preprocessed_batch(
+        self,
+        batch_chw_list: List[np.ndarray],
+        meta_list: List[Tuple[float, int, int, int, int]]
+    ) -> List[List[Dict[str, Any]]]:
+        """
+        Runs batch inference when frames have already been preprocessed on the extraction worker threads.
+        Eliminates CPU resize/normalize bottleneck from the GPU thread!
+        """
+        if not batch_chw_list:
+            return []
+
+        input_tensor = np.ascontiguousarray(np.stack(batch_chw_list, axis=0), dtype=np.float32)
+        raw_outputs = self._execute_inference(input_tensor)
+
+        all_results = []
+        batch_size = len(batch_chw_list)
         for b in range(batch_size):
             r, pad_x, pad_y, orig_w, orig_h = meta_list[b]
             frame_detections = self._parse_detections(raw_outputs, b, r, pad_x, pad_y, orig_w, orig_h)

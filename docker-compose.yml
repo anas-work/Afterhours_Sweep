@@ -19,6 +19,7 @@ services:
       - ./models:/app/models
       - ./config:/app/config
       - ./test_videos:/app/test_videos
+      - ./entrypoint.sh:/app/entrypoint.sh
     deploy:
       resources:
         reservations:

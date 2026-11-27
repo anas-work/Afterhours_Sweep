@@ -9,16 +9,17 @@ system:
   log_level: "INFO"
 
 hardware:
-  inference_backend: "onnx"
+  inference_backend: "tensorrt"
   device: "cuda"
   device_id: 0                  # Specifically utilizes GPU 0 (NVIDIA RTX A4000)
-  precision: "fp32"             # fp32 or fp16
-  batch_size: 16                # Dynamic batch size for parallel inference across cameras
+  precision: "fp16"             # High throughput fp16 TensorRT engine
+  batch_size: 8                 # Optimal batch size for parallel inference
   num_extraction_workers: 8     # Concurrent threads extracting 1 FPS frames from videos
 
 ml:
   model_name: "yolo26n"
-  model_path: "models/yolo26n.onnx"
+  model_path: "models/yolo26n_fp16.engine"
+  onnx_fallback_path: "models/yolo26n.onnx"
   model_url: "https://huggingface.co/onnx-community/yolo26n-ONNX/resolve/main/onnx/model.onnx"
   fp16_model_path: "models/yolo26n_fp16.onnx"
   fp16_model_url: "https://huggingface.co/onnx-community/yolo26n-ONNX/resolve/main/onnx/model_fp16.onnx"

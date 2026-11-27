@@ -1,32 +1,15 @@
 # Production Dockerfile for ABLBL Afterhours Sentinel Surveillance System
-# NVIDIA CUDA accelerated YOLO26n Vision Engine & FastAPI Backend
+# Based on validated CUDA 12.2 environment with full ONNX Runtime GPU support
 
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+FROM ablbl_attendancev1-recognition_engine:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV TZ=Asia/Kolkata
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
 
 WORKDIR /app
-
-# Install system dependencies & OpenCV runtime
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-dev \
-    build-essential \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    ffmpeg \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python requirements
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt && \
-    pip3 install --no-cache-dir "uvicorn[standard]>=0.22.0" "websockets>=12.0"
 
 # Copy application source code
 COPY . .

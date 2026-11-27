@@ -90,51 +90,95 @@ class SweepProcessor:
         frame_queue: queue.Queue = queue.Queue(maxsize=self.batch_size * 8)
         extraction_done = threading.Event()
 
-        # Step 2: Overlapped frame extraction workers
+        # Step 2: Overlapped frame extraction workers (Keyframe / Fast Decode - Comment 4)
         def extractor_worker():
             with ThreadPoolExecutor(max_workers=self.num_extraction_workers) as executor:
                 def extract_camera_frames(cam_id: str):
                     v_path = camera_video_paths[cam_id]
                     c_name = camera_names.get(cam_id, cam_id)
                     steps = camera_frame_metadata.get(cam_id, [])
+                    if not steps or not os.path.exists(v_path):
+                        return
 
                     cap = cv2.VideoCapture(v_path)
                     if not cap.isOpened():
                         return
-
+                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
                     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-                    step_frame_delta = int(round(fps))
+                    cap.release()
 
-                    current_pos = -1
-                    for i, (sec, frame_idx) in enumerate(steps):
-                        # If first frame, negative offset, or gap > 90 frames, seek directly
-                        if current_pos < 0 or frame_idx < current_pos or (frame_idx - current_pos) > 90:
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                            current_pos = frame_idx
-                        else:
-                            # Fast packet advance without full RGB pixel decompression (3-5x faster)
-                            while current_pos < frame_idx:
-                                if not cap.grab():
-                                    break
-                                current_pos += 1
+                    # Comment 4 Optimization: Fast 1-FPS Keyframe extraction via FFmpeg pipeline
+                    # Drops non-keyframes before decompression, avoiding decoding 25-30 frames to get 1
+                    cmd = [
+                        "ffmpeg", "-discard", "nokey",
+                        "-i", v_path,
+                        "-vf", "fps=1",
+                        "-f", "image2pipe",
+                        "-pix_fmt", "bgr24",
+                        "-vcodec", "rawvideo",
+                        "-"
+                    ]
+                    frame_bytes = w * h * 3
+                    sec_cursor = 0.0
+                    used_ffmpeg = False
 
-                        ret, frame = cap.read()
-                        if not ret or frame is None:
-                            # Resynchronization fallback: direct seek
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                            ret, frame = cap.read()
-
-                        current_pos = frame_idx + 1
-
-                        if ret and frame is not None:
-                            # Push to queue (blocks if queue is full to bound memory)
+                    try:
+                        import subprocess
+                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                        while True:
+                            raw = proc.stdout.read(frame_bytes)
+                            if not raw or len(raw) < frame_bytes:
+                                break
+                            frame = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 3))
+                            chw, r, pad_x, pad_y, orig_w, orig_h = self.detector._preprocess_frame(frame)
                             frame_queue.put({
                                 "cam_id": cam_id,
                                 "cam_name": c_name,
-                                "sec": sec,
-                                "frame": frame
+                                "sec": sec_cursor,
+                                "frame": frame,
+                                "chw": chw,
+                                "meta": (r, pad_x, pad_y, orig_w, orig_h)
                             })
-                    cap.release()
+                            sec_cursor += 1.0
+                        proc.wait()
+                        if sec_cursor > 0:
+                            used_ffmpeg = True
+                    except Exception as ff_err:
+                        logger.warning(f"FFmpeg fast extraction failed for {cam_id}, falling back to OpenCV: {ff_err}")
+
+                    # Fallback to OpenCV if ffmpeg didn't produce frames
+                    if not used_ffmpeg:
+                        cap = cv2.VideoCapture(v_path)
+                        current_pos = -1
+                        for i, (sec, frame_idx) in enumerate(steps):
+                            if current_pos < 0 or frame_idx < current_pos or (frame_idx - current_pos) > 90:
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                                current_pos = frame_idx
+                            else:
+                                while current_pos < frame_idx:
+                                    if not cap.grab():
+                                        break
+                                    current_pos += 1
+
+                            ret, frame = cap.read()
+                            if not ret or frame is None:
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                                ret, frame = cap.read()
+
+                            current_pos = frame_idx + 1
+
+                            if ret and frame is not None:
+                                chw, r, pad_x, pad_y, orig_w, orig_h = self.detector._preprocess_frame(frame)
+                                frame_queue.put({
+                                    "cam_id": cam_id,
+                                    "cam_name": c_name,
+                                    "sec": sec,
+                                    "frame": frame,
+                                    "chw": chw,
+                                    "meta": (r, pad_x, pad_y, orig_w, orig_h)
+                                })
+                        cap.release()
 
                 list(executor.map(extract_camera_frames, list(camera_frame_metadata.keys())))
             extraction_done.set()
@@ -142,20 +186,84 @@ class SweepProcessor:
         extractor_thread = threading.Thread(target=extractor_worker, daemon=True)
         extractor_thread.start()
 
-        # Step 3: GPU Batch Inference loop
+        # Step 3: Asynchronous Detection I/O Writer Thread
+        # Offloads disk I/O (cv2.imwrite), SQLite DB writes, and WebSocket callbacks from GPU loop
+        io_queue: queue.Queue = queue.Queue(maxsize=1024)
+        io_done = threading.Event()
+
+        def io_writer_worker():
+            camera_last_captured_sec: Dict[str, float] = {}
+            camera_last_alerted_sec: Dict[str, float] = {}
+
+            while not (io_done.is_set() and io_queue.empty()):
+                try:
+                    task = io_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+
+                cam_id = task["cam_id"]
+                c_name = task["cam_name"]
+                sec = task["sec"]
+                orig_frame = task["orig_frame"]
+                dets = task["dets"]
+
+                # 5-second pause cooldown per camera
+                last_captured = camera_last_captured_sec.get(cam_id)
+                if last_captured is not None and (sec - last_captured) < 5.0:
+                    io_queue.task_done()
+                    continue
+
+                camera_last_captured_sec[cam_id] = sec
+                max_conf = max(d["confidence"] for d in dets)
+                boxes = [d["box"] for d in dets]
+
+                # Annotate frame
+                time_str = f"+{int(sec//60):02d}:{int(sec%60):02d}s"
+                annotated_frame = self.detector.annotate_frame(orig_frame, dets, camera_name=c_name, timestamp_str=time_str)
+
+                # Save capture snapshot asynchronously
+                capture_filename = f"{cam_id}_sec{int(sec):03d}_p{len(dets)}.jpg"
+                capture_path = os.path.join(sweep_captures_dir, capture_filename)
+                cv2.imwrite(capture_path, annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+                # Record in DB asynchronously
+                db_det = self.db_repo.record_detection(
+                    sweep_id=sweep_id,
+                    camera_id=cam_id,
+                    camera_name=c_name,
+                    video_offset_sec=sec,
+                    person_count=len(dets),
+                    max_confidence=max_conf,
+                    bounding_boxes=boxes,
+                    capture_path=capture_path
+                )
+
+                # Broadcast alarm detection event (with 5-second pause cooldown)
+                if on_person_detected:
+                    last_alert_sec = camera_last_alerted_sec.get(cam_id)
+                    if last_alert_sec is None or (sec - last_alert_sec) >= 5.0:
+                        camera_last_alerted_sec[cam_id] = sec
+                        try:
+                            on_person_detected(db_det.to_dict())
+                        except Exception as cb_err:
+                            logger.error(f"Error in on_person_detected callback: {cb_err}")
+
+                io_queue.task_done()
+
+        io_thread = threading.Thread(target=io_writer_worker, daemon=True)
+        io_thread.start()
+
+        # Step 4: Pure GPU Batch Inference loop (Unblocked by Preprocessing or Disk/DB I/O!)
         processed_frames_count = 0
         total_person_detections = 0
         batch_items = []
-        camera_last_captured_sec: Dict[str, float] = {}
-        camera_last_alerted_sec: Dict[str, float] = {}
-
         last_progress_update = time.time()
 
         while not (extraction_done.is_set() and frame_queue.empty() and len(batch_items) == 0):
             # Fill batch
             while len(batch_items) < self.batch_size:
                 try:
-                    item = frame_queue.get(timeout=0.1)
+                    item = frame_queue.get(timeout=0.05)
                     batch_items.append(item)
                 except queue.Empty:
                     if extraction_done.is_set():
@@ -164,59 +272,23 @@ class SweepProcessor:
             if not batch_items:
                 continue
 
-            # Run batched inference on GPU 0
-            frames_to_infer = [it["frame"] for it in batch_items]
-            batch_results = self.detector.detect_batch(frames_to_infer)
+            # Run batched inference on GPU 0 using pre-computed tensors!
+            chw_batch = [it["chw"] for it in batch_items]
+            meta_batch = [it["meta"] for it in batch_items]
+            batch_results = self.detector.detect_preprocessed_batch(chw_batch, meta_batch)
 
-            # Process detection results
+            # Route detections to asynchronous IO worker
             for idx, item in enumerate(batch_items):
-                cam_id = item["cam_id"]
-                c_name = item["cam_name"]
-                sec = item["sec"]
-                orig_frame = item["frame"]
                 dets = batch_results[idx]
-
                 if len(dets) > 0:
-                    # 5-second pause after person detection before capturing next frame on this camera
-                    last_captured = camera_last_captured_sec.get(cam_id)
-                    if last_captured is not None and (sec - last_captured) < 5.0:
-                        continue
-
-                    camera_last_captured_sec[cam_id] = sec
                     total_person_detections += len(dets)
-                    max_conf = max(d["confidence"] for d in dets)
-                    boxes = [d["box"] for d in dets]
-
-                    # Annotate frame
-                    time_str = f"+{int(sec//60):02d}:{int(sec%60):02d}s"
-                    annotated_frame = self.detector.annotate_frame(orig_frame, dets, camera_name=c_name, timestamp_str=time_str)
-
-                    # Save capture snapshot
-                    capture_filename = f"{cam_id}_sec{int(sec):03d}_p{len(dets)}.jpg"
-                    capture_path = os.path.join(sweep_captures_dir, capture_filename)
-                    cv2.imwrite(capture_path, annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-
-                    # Record in DB
-                    db_det = self.db_repo.record_detection(
-                        sweep_id=sweep_id,
-                        camera_id=cam_id,
-                        camera_name=c_name,
-                        video_offset_sec=sec,
-                        person_count=len(dets),
-                        max_confidence=max_conf,
-                        bounding_boxes=boxes,
-                        capture_path=capture_path
-                    )
-
-                    # Broadcast alarm detection event (with 5-second pause cooldown)
-                    if on_person_detected:
-                        last_alert_sec = camera_last_alerted_sec.get(cam_id)
-                        if last_alert_sec is None or (sec - last_alert_sec) >= 5.0:
-                            camera_last_alerted_sec[cam_id] = sec
-                            try:
-                                on_person_detected(db_det.to_dict())
-                            except Exception as cb_err:
-                                logger.error(f"Error in on_person_detected callback: {cb_err}")
+                    io_queue.put({
+                        "cam_id": item["cam_id"],
+                        "cam_name": item["cam_name"],
+                        "sec": item["sec"],
+                        "orig_frame": item["frame"],
+                        "dets": dets
+                    })
 
             processed_frames_count += len(batch_items)
             batch_items.clear()
@@ -237,6 +309,10 @@ class SweepProcessor:
                 last_progress_update = now
 
         extractor_thread.join()
+
+        # Flush background IO queue
+        io_done.set()
+        io_thread.join()
 
         total_elapsed = max(0.01, time.time() - start_time)
         final_fps = processed_frames_count / total_elapsed
